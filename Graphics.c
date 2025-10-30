@@ -3,18 +3,23 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <float.h>
 
 int FOV = 90;
-int distance = -20;
+int distance = 20;
 int windowWidth = 1280;
 int windowHeight = 700;
 int running = 1;
-SDL_Event event;
 int numVerts = 0;
 int numTriangles = 0;
-int culling = 0; // 0 to turn off, any other number to turn on
-int fillMode = 0; // 0 to turn off, any other number to turn on
+int culling = 0;
+int fillMode = 0;
+double movementSpeed = 5.0;
+double camYaw = 0;
+double camPitch = 0;
+
+// Z-buffer for depth testing
+float *zBuffer = NULL;
 
 // Structure to store 3-dimensional points
 typedef struct point3D
@@ -24,11 +29,12 @@ typedef struct point3D
     double z;
 } point3D;
 
-// Structure to store 2-dimensional points
+// Structure to store 2-dimensional points with depth
 typedef struct point2D
 {
     double x;
     double y;
+    double z; // depth value
 } point2D;
 
 // Structure to store a triangle face of an object
@@ -38,6 +44,23 @@ typedef struct triangle
     point3D normal;
     double dot;
 } triangle;
+
+// Initialize or resize Z-buffer
+void initZBuffer(int width, int height)
+{
+    if (zBuffer) {
+        free(zBuffer);
+    }
+    zBuffer = (float*)malloc(width * height * sizeof(float));
+}
+
+// Clear Z-buffer with far plane value
+void clearZBuffer(int width, int height)
+{
+    for (int i = 0; i < width * height; i++) {
+        zBuffer[i] = -FLT_MAX; // Initialize to negative infinity
+    }
+}
 
 // Method to normalize vectors
 point3D normalize(point3D p)
@@ -84,49 +107,40 @@ double findDot(triangle tri, point3D camPos)
     return dot;
 }
 
-// Method to projecta 3-demensional point onto a 2-dimensional plane, returning the 2-dimensional point
-point2D project(point3D p)
+// Method to project a 3-dimensional point onto a 2-dimensional plane with depth
+point2D project(point3D p, point3D cam)
 {
-    // Obtain FOV in radians and determine projection factor
+    // Translate to camera space
+    double x = p.x - cam.x;
+    double y = p.y - cam.y;
+    double z = p.z - cam.z;
+
+    // Apply yaw rotation around global Y
+    double xz = sqrt(x*x + z*z);
+    double theta = atan2(z, x) - camYaw;
+    x = xz * cos(theta);
+    z = xz * sin(theta);
+
+    // Apply pitch rotation around camera local X
+    double yz = sqrt(y*y + z*z);
+    theta = atan2(z, y) - camPitch;
+    y = yz * cos(theta);
+    z = yz * sin(theta);
+
     double fov_rad = (FOV * M_PI) / 180;
     double factor = 1 / tan(fov_rad / 2);
-    
-    // Remove division by zero
-    if (p.z == 0) p.z = 0.001;
+    if (z == 0) z = 0.001;
 
-    // Project points using projection factor and projection formula
+    // Return the projected point with depth
     point2D projected;
-    projected.x = p.x / p.z * factor * windowWidth + windowWidth / 2;
-    projected.y = p.y / p.z * factor * windowWidth + windowHeight / 2;
-
-    // Return the projected point 
+    projected.x = x / z * factor * windowWidth + windowWidth/2;
+    projected.y = y / z * factor * windowWidth + windowHeight/2;
+    projected.z = z; // Store depth for z-buffering
     return projected;
 }
 
-// Method to rotate three dimensional points about the X axis 
-void rotateX(point3D *p, double theta)
-{
-    p->z -= distance;
-    double newY = p->y * cos(theta) - p->z * sin(theta);
-    double newZ = p->y * sin(theta) + p->z * cos(theta);
-
-    p->y = newY;
-    p->z = newZ + distance;;
-}
-
-// Method to rotate three dimensional points about the Y axis 
-void rotateY(point3D *p, double theta)
-{
-    p->z -=distance;
-    double newX = p->x * cos(theta) + p->z * sin(theta);
-    double newZ = -1 * (p->x * sin(theta)) + p->z * cos(theta);
-
-    p->x = newX;
-    p->z = newZ + distance;
-}
-
-// Function to fill in triangles
-void fillTriangle(SDL_Renderer *renderer, point2D p1, point2D p2, point2D p3)
+// Interpolate depth values across scanline
+void fillTriangleZBuffer(SDL_Renderer *renderer, point2D p1, point2D p2, point2D p3)
 {
     // Sort points by y-coordinate ascending order
     if (p2.y < p1.y) { point2D temp = p1; p1 = p2; p2 = temp; }
@@ -138,9 +152,16 @@ void fillTriangle(SDL_Renderer *renderer, point2D p1, point2D p2, point2D p3)
     double dx2 = (p3.y - p1.y) > 0 ? (p3.x - p1.x) / (p3.y - p1.y) : 0;
     double dx3 = (p3.y - p2.y) > 0 ? (p3.x - p2.x) / (p3.y - p2.y) : 0;
 
+    // Depth slopes
+    double dz1 = (p2.y - p1.y) > 0 ? (p2.z - p1.z) / (p2.y - p1.y) : 0;
+    double dz2 = (p3.y - p1.y) > 0 ? (p3.z - p1.z) / (p3.y - p1.y) : 0;
+    double dz3 = (p3.y - p2.y) > 0 ? (p3.z - p2.z) / (p3.y - p2.y) : 0;
+
     // Determine start and end x values
     double sx = p1.x;
     double ex = p1.x;
+    double sz = p1.z;
+    double ez = p1.z;
 
     // Determine start and end y values
     int sy = (int)ceil(p1.y);
@@ -148,33 +169,79 @@ void fillTriangle(SDL_Renderer *renderer, point2D p1, point2D p2, point2D p3)
 
     // Fill from p1 to p2
     for (int y = sy; y < ey; y++) {
-        int startX = (int)(sx + (y - p1.y) * dx1);
-        int endX = (int)(ex + (y - p1.y) * dx2);
-        if (startX > endX) { int temp = startX; startX = endX; endX = temp; }
-        SDL_RenderDrawLine(renderer, startX, y, endX, y);
+        if (y < 0 || y >= windowHeight) continue;
+        
+        double dy = y - p1.y;
+        int startX = (int)(sx + dy * dx1);
+        int endX = (int)(ex + dy * dx2);
+        float startZ = (float)(sz + dy * dz1);
+        float endZ = (float)(ez + dy * dz2);
+        
+        if (startX > endX) { 
+            int tempX = startX; startX = endX; endX = tempX; 
+            float tempZ = startZ; startZ = endZ; endZ = tempZ;
+        }
+
+        // Draw scanline with z-buffer test
+        for (int x = startX; x <= endX; x++) {
+            if (x < 0 || x >= windowWidth) continue;
+            
+            int idx = y * windowWidth + x;
+            float t = (endX - startX) > 0 ? (float)(x - startX) / (endX - startX) : 0;
+            float z = startZ + t * (endZ - startZ);
+            
+            if (z > zBuffer[idx]) {
+                zBuffer[idx] = z;
+                SDL_RenderDrawPoint(renderer, x, y);
+            }
+        }
     }
 
     // Redetermine start and end values for filling from p2 to p3
     sx = p2.x;
+    sz = p2.z;
     sy = (int)ceil(p2.y);
     ey = (int)ceil(p3.y);
 
     // Fill from p2 to p3
     for (int y = sy; y < ey; y++) {
-        int startX = (int)(sx + (y - p2.y) * dx3);
-        int endX = (int)(ex + (y - p1.y) * dx2);
-        if (startX > endX) { int temp = startX; startX = endX; endX = temp; }
-        SDL_RenderDrawLine(renderer, startX, y, endX, y);
+        if (y < 0 || y >= windowHeight) continue;
+        
+        double dy1 = y - p2.y;
+        double dy2 = y - p1.y;
+        int startX = (int)(sx + dy1 * dx3);
+        int endX = (int)(ex + dy2 * dx2);
+        float startZ = (float)(sz + dy1 * dz3);
+        float endZ = (float)(ez + dy2 * dz2);
+        
+        if (startX > endX) { 
+            int tempX = startX; startX = endX; endX = tempX; 
+            float tempZ = startZ; startZ = endZ; endZ = tempZ;
+        }
+
+        // Draw scanline with z-buffer test
+        for (int x = startX; x <= endX; x++) {
+            if (x < 0 || x >= windowWidth) continue;
+            
+            int idx = y * windowWidth + x;
+            float t = (endX - startX) > 0 ? (float)(x - startX) / (endX - startX) : 0;
+            float z = startZ + t * (endZ - startZ);
+            
+            if (z > zBuffer[idx]) {
+                zBuffer[idx] = z;
+                SDL_RenderDrawPoint(renderer, x, y);
+            }
+        }
     }
 }
 
-// Function to fill cube faces
-void fillFace(SDL_Renderer *renderer, triangle tri)
+// Function to fill cube faces with z-buffering
+void fillFace(SDL_Renderer *renderer, triangle tri, point3D cam)
 {
     // Project vertexes onto 2-D plane
-    point2D v1 = project(tri.p[0]);
-    point2D v2 = project(tri.p[1]);
-    point2D v3 = project(tri.p[2]);
+    point2D v1 = project(tri.p[0], cam);
+    point2D v2 = project(tri.p[1], cam);
+    point2D v3 = project(tri.p[2], cam);
 
     // Determine color of face based off relativity to camera
     double brightness = tri.dot;
@@ -185,8 +252,8 @@ void fillFace(SDL_Renderer *renderer, triangle tri)
     Uint8 b = (Uint8)(251* tri.dot);
     SDL_SetRenderDrawColor(renderer, r, g, b, 255);
 
-    // Split face into two triangles and fill them
-    fillTriangle(renderer, v1, v2, v3);
+    // Fill triangle with z-buffer
+    fillTriangleZBuffer(renderer, v1, v2, v3);
 }
 
 // .obj data loader
@@ -220,7 +287,6 @@ int loadOBJ(const char* filename, point3D** vertices, triangle** tris, int* nTri
     fclose(f);
     *vertices = vert;
     *tris = tri;
-    *nTriangles = *nTriangles;
     return 1;
 }
 
@@ -228,6 +294,8 @@ int main()
 {
     // Initialize system
     SDL_Init(SDL_INIT_VIDEO);
+    SDL_ShowCursor(SDL_DISABLE);
+    SDL_SetRelativeMouseMode(SDL_TRUE);
 
     // Initialize camera position
     point3D camera = {0, 0, 0};
@@ -239,6 +307,9 @@ int main()
 
     // Grab renderer 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+
+    // Initialize Z-buffer
+    initZBuffer(windowWidth, windowHeight);
 
     // Load object
     point3D* vertices = NULL;
@@ -276,94 +347,130 @@ int main()
             triangles[i].p[j].x -= center.x;
             triangles[i].p[j].y -= center.y;
             triangles[i].p[j].z -= center.z;
-            triangles[i].p[j].z += distance;  // Move to viewing distance
+            triangles[i].p[j].z -= distance; 
         }
     }
+
+    // Timing variables for smooth frame-independent movement
+    Uint64 lastTime = SDL_GetPerformanceCounter();
+    double deltaTime = 0.0;
 
     // Render loop
     while(running)
     {
-        SDL_PollEvent(&event);
+        // Calculate delta time
+        Uint64 currentTime = SDL_GetPerformanceCounter();
+        deltaTime = (double)(currentTime - lastTime) / SDL_GetPerformanceFrequency();
+        lastTime = currentTime;
 
-        // If window is closed, end render loop
-        if (event.type == SDL_QUIT)
+        // Process ALL events in the queue
+        SDL_Event event;
+        while(SDL_PollEvent(&event))
         {
-            running = 0;
-        }
-        
-        // Toggle fill and culling modes with 'f' and 'c' keys respectively
-        if (event.type == SDL_KEYDOWN)
-        {
-            if (event.key.keysym.sym == SDLK_f)
+            // If window is closed, end render loop
+            if (event.type == SDL_QUIT)
             {
-                fillMode = (fillMode == 0) ? 1 : 0;
+                running = 0;
             }
-            if (event.key.keysym.sym == SDLK_c)
-            {
-                culling = (culling == 0) ? 1 : 0;
-            }
-        }
 
-        if (event.type == SDL_WINDOWEVENT)
-        {
+            // Toggle fill, culling, and fullscreen modes
+            if (event.type == SDL_KEYDOWN)
+            {
+                if (event.key.keysym.sym == SDLK_f)
+                {
+                    fillMode = (fillMode == 0) ? 1 : 0;
+                }
+                if (event.key.keysym.sym == SDLK_c)
+                {
+                    culling = (culling == 0) ? 1 : 0;
+                }
+                if (event.key.keysym.sym == SDLK_ESCAPE)
+                {
+                    SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN);
+                }
+            }
+
             // If window is resized, re-initialize windowWidth and windowHeight
-            if (event.window.event == SDL_WINDOWEVENT_RESIZED)
+            if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED)
             {
                 SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+                initZBuffer(windowWidth, windowHeight);
             }
-        }
 
-        // If mouse is moved within the window, rotate points in directions x and y accordingly
-        if (event.type == SDL_MOUSEMOTION)
-        {
-            double dx = event.motion.xrel;
-            double dy = event.motion.yrel;
-            double rotationX = -1 * dx * 2 * M_PI / 1000;
-            double rotationY = dy * 2 * M_PI / 1000;
-            for (int i = 0; i < numTriangles; i++)
+            // Mouse movement for camera rotation
+            if (event.type == SDL_MOUSEMOTION)
             {
-                rotateY(&triangles[i].p[0], rotationX);
-                rotateY(&triangles[i].p[1], rotationX);
-                rotateY(&triangles[i].p[2], rotationX);
-
-                rotateX(&triangles[i].p[0], rotationY);
-                rotateX(&triangles[i].p[1], rotationY);
-                rotateX(&triangles[i].p[2], rotationY);
-
+                camYaw += -1 * event.motion.xrel * 0.002;
+                camPitch += -1 * event.motion.yrel * 0.002;
+                if (camPitch > M_PI / 2) camPitch = M_PI / 2;
+                if (camPitch < -M_PI / 2) camPitch = -M_PI / 2;
             }
         }
+
+        // Get keyboard state for smooth movement
+        const Uint8 *keyboard_state_array = SDL_GetKeyboardState(NULL);
+
+        // Calculate forward/right vectors for movement (time-scaled)
+        double speed = movementSpeed * deltaTime;
+        double forwardX = sin(-1 * camYaw) * speed;
+        double forwardZ = cos(-1 * camYaw) * speed;
+        double rightX   = cos(-1 * camYaw) * speed;
+        double rightZ   = -sin(-1 * camYaw) * speed;
+
+        // Adjust camera position
+        if (keyboard_state_array[SDL_SCANCODE_W]) { camera.x -= forwardX; camera.z -= forwardZ; }
+        if (keyboard_state_array[SDL_SCANCODE_S]) { camera.x += forwardX; camera.z += forwardZ; }
+        if (keyboard_state_array[SDL_SCANCODE_A]) { camera.x += rightX; camera.z += rightZ; }
+        if (keyboard_state_array[SDL_SCANCODE_D]) { camera.x -= rightX; camera.z -= rightZ; }
+        if (keyboard_state_array[SDL_SCANCODE_SPACE]) camera.y += speed;
+        if (keyboard_state_array[SDL_SCANCODE_LSHIFT]) camera.y -= speed;
+        
+        // Clear Z-buffer for new frame
+        clearZBuffer(windowWidth, windowHeight);
         
         // Prepare for next frame by clearing previous render
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
 
-        // Draw lines connecting points in every visible face
+        // Draw triangles with proper depth sorting
         SDL_SetRenderDrawColor(renderer, 204, 204, 255, 225);
         for (int i = 0; i < numTriangles; i++)
         {
-            point2D v1 = project(triangles[i].p[0]);
-            point2D v2 = project(triangles[i].p[1]);
-            point2D v3 = project(triangles[i].p[2]);
             triangles[i].normal = findNormal(triangles[i]);
             triangles[i].dot = findDot(triangles[i], camera);
-            if (triangles[i].dot > 0 && fillMode){
-                fillFace(renderer, triangles[i]);
-            } else if (triangles[i].dot > 0 && culling && !fillMode){
-                SDL_RenderDrawLine(renderer, v1.x, v1.y, v2.x, v2.y);
-                SDL_RenderDrawLine(renderer, v2.x, v2.y, v3.x, v3.y);
-                SDL_RenderDrawLine(renderer, v3.x, v3.y, v1.x, v1.y);
-            } else if (!culling && !fillMode){
-                SDL_RenderDrawLine(renderer, v1.x, v1.y, v2.x, v2.y);
-                SDL_RenderDrawLine(renderer, v2.x, v2.y, v3.x, v3.y);
-                SDL_RenderDrawLine(renderer, v3.x, v3.y, v1.x, v1.y);
+            
+            if (fillMode){
+                // In fill mode, use z-buffer for all triangles
+                if (!culling || triangles[i].dot > 0) {
+                    fillFace(renderer, triangles[i], camera);
+                }
+            } else {
+                // Wireframe mode (no z-buffer needed)
+                point2D v1 = project(triangles[i].p[0], camera);
+                point2D v2 = project(triangles[i].p[1], camera);
+                point2D v3 = project(triangles[i].p[2], camera);
+                
+                if (triangles[i].dot > 0 && culling){
+                    SDL_RenderDrawLine(renderer, v1.x, v1.y, v2.x, v2.y);
+                    SDL_RenderDrawLine(renderer, v2.x, v2.y, v3.x, v3.y);
+                    SDL_RenderDrawLine(renderer, v3.x, v3.y, v1.x, v1.y);
+                } else if (!culling){
+                    SDL_RenderDrawLine(renderer, v1.x, v1.y, v2.x, v2.y);
+                    SDL_RenderDrawLine(renderer, v2.x, v2.y, v3.x, v3.y);
+                    SDL_RenderDrawLine(renderer, v3.x, v3.y, v1.x, v1.y);
+                }
             }
         }
 
         // Display newest render
         SDL_RenderPresent(renderer);
-        SDL_Delay(10);
+        
+        // Cap frame rate to 60 FPS for consistency
+        SDL_Delay(1);
     }
 
+    // Free memory
+    free(zBuffer);
     free(vertices);
     free(triangles);
 
@@ -371,4 +478,6 @@ int main()
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
+    
+    return 0;
 }
