@@ -36,4 +36,8 @@ make
 | `c`         | toggle back-face culling |
 | Mouse       | Rotate camera            |
 | `wasd`      | Movement keys            |
-| Right Click | Retrieve mouse         |
+| Right Click | Retrieve mouse           |
+
+## Next Steps 
+- Textures and texture mapping
+- Frustum culling
