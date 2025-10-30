@@ -10,13 +10,14 @@ int distance = 20;
 int windowWidth = 1280;
 int windowHeight = 700;
 int running = 1;
-int numVerts = 0;
-int numTriangles = 0;
 int culling = 0;
 int fillMode = 0;
-double movementSpeed = 5.0;
+int nObjects = 2;
+double movementSpeed = 5;
 double camYaw = 0;
 double camPitch = 0;
+char* bunny = "models/bunny.obj";
+char* head = "models/head.obj";
 
 // Z-buffer for depth testing
 float *zBuffer = NULL;
@@ -44,6 +45,12 @@ typedef struct triangle
     point3D normal;
     double dot;
 } triangle;
+
+typedef struct object
+{
+    int nTriangles;
+    triangle* triangles;
+} object;
 
 // Initialize or resize Z-buffer
 void initZBuffer(int width, int height)
@@ -257,38 +264,101 @@ void fillFace(SDL_Renderer *renderer, triangle tri, point3D cam)
 }
 
 // .obj data loader
-int loadOBJ(const char* filename, point3D** vertices, triangle** tris, int* nTriangles)
+object loadOBJ(const char* filename)
 {
     FILE* f = fopen(filename, "r");
     if (!f){
         printf("Failed to open %s\n", filename); 
-        return 0;
+        object empty = {0, NULL};
+        return empty;
     }
-    char line[256];
-    int nVertices = 0;
-    *nTriangles = 0;
 
-    point3D* vert = malloc(sizeof(point3D) * 5000);
-    triangle* tri = malloc(sizeof(triangle) * 10000);
+    char line[512];
+    int vertexCapacity = 1000000;
+    int triCapacity = 2000000;
+    int nVertices = 0;
+    int nTriangles = 0;
+
+    point3D* vert = malloc(sizeof(point3D) * vertexCapacity);
+    triangle* tri = malloc(sizeof(triangle) * triCapacity);
 
     while (fgets(line, sizeof(line), f)){
-        if (strncmp(line, "v ", 2)==0){
+        if (strncmp(line, "v ", 2) == 0){
+            if (nVertices >= vertexCapacity){
+                vertexCapacity *= 2;
+                vert = realloc(vert, sizeof(point3D) * vertexCapacity);
+            }
             point3D v;
             sscanf(line, "v %lf %lf %lf", &v.x, &v.y, &v.z);
             vert[nVertices++] = v;
-        }else if(strncmp(line,"f ",2)==0){
-            int idx[10], count=sscanf(line+2,"%d %d %d %d %d %d %d %d %d %d",&idx[0],&idx[1],&idx[2],&idx[3],&idx[4],&idx[5],&idx[6],&idx[7],&idx[8],&idx[9]);
-            for(int i=1;i<count-1;i++){
-                tri[*nTriangles]=(triangle){vert[idx[0]-1],vert[idx[i]-1],vert[idx[i+1]-1]};
-                (*nTriangles)++;
+        } else if (strncmp(line, "f ", 2) == 0){
+            int idx[10]; // support polygons up to 10 vertices
+            int count = 0;
+            char* ptr = line + 2;
+            while (*ptr && count < 10){
+                int vi;
+                if (sscanf(ptr, "%d", &vi) != 1) break;
+                idx[count++] = vi;
+                char* next = strchr(ptr, ' ');
+                if (!next) break;
+                ptr = next + 1;
+            }
+
+            // triangulate polygon (fan method)
+            for (int i = 1; i < count - 1; i++){
+                if (nTriangles >= triCapacity){
+                    triCapacity *= 2;
+                    tri = realloc(tri, sizeof(triangle) * triCapacity);
+                }
+                tri[nTriangles] = (triangle){
+                    vert[idx[0]-1],
+                    vert[idx[i]-1],
+                    vert[idx[i+1]-1],
+                    {0,0,0},
+                    0.0
+                };
+                nTriangles++;
             }
         }
     }
+
+    // free memory
     fclose(f);
-    *vertices = vert;
-    *tris = tri;
-    return 1;
+    free(vert); 
+
+    object obj;
+    obj.nTriangles = nTriangles;
+    obj.triangles = tri;
+    return obj;
 }
+
+// Function to render objects based on depth level
+void renderObject(object obj, point3D cam, SDL_Renderer *renderer, int fillMode, int culling) 
+{
+    for (int i = 0; i < obj.nTriangles; i++){
+        obj.triangles[i].normal = findNormal(obj.triangles[i]);
+        obj.triangles[i].dot = findDot(obj.triangles[i], cam);
+
+        if (fillMode){
+            // In fill mode, use z-buffer for all triangles
+            if (!culling || obj.triangles[i].dot > 0) {
+                fillFace(renderer, obj.triangles[i], cam);
+            }
+        } else {
+            // Wireframe mode (no z-buffer needed)
+            point2D v1 = project(obj.triangles[i].p[0], cam);
+            point2D v2 = project(obj.triangles[i].p[1], cam);
+            point2D v3 = project(obj.triangles[i].p[2], cam);
+
+            if ((obj.triangles[i].dot > 0 && culling) || !culling){
+                SDL_RenderDrawLine(renderer, v1.x, v1.y, v2.x, v2.y);
+                SDL_RenderDrawLine(renderer, v2.x, v2.y, v3.x, v3.y);
+                SDL_RenderDrawLine(renderer, v3.x, v3.y, v1.x, v1.y);
+            }
+        }
+    }
+}
+
 
 int main()
 {
@@ -312,44 +382,50 @@ int main()
     initZBuffer(windowWidth, windowHeight);
 
     // Load object
-    point3D* vertices = NULL;
-    triangle* triangles = NULL;
-    if(!loadOBJ("models/bunny.obj", &vertices, &triangles, &numTriangles)){
-        printf("Failed to load OBJ\n"); 
-        return 1;
-    }
+    object objects[nObjects];
+    objects[0] = loadOBJ(bunny);
+    objects[1] = loadOBJ(head);
 
-    // After loading and scaling the model, calculate its center
-    double scale = 50.0;
-    point3D center = {0, 0, 0};
+    // After loading and scaling the modelz, calculate each models center
+    for (int obj = 0; obj < nObjects; obj++ ){
+        double scale = 50.0;
+        point3D center = {0, 0, 0};
 
-    for (int i = 0; i < numTriangles; i++) {
-        for (int j = 0; j < 3; j++) {
-            triangles[i].p[j].x *= scale;
-            triangles[i].p[j].y *= scale;
-            triangles[i].p[j].z *= scale;
-            
-            center.x += triangles[i].p[j].x;
-            center.y += triangles[i].p[j].y;
-            center.z += triangles[i].p[j].z;
+        for (int i = 0; i < objects[obj].nTriangles; i++) {
+            for (int j = 0; j < 3; j++) {
+                objects[obj].triangles[i].p[j].x *= scale;
+                objects[obj].triangles[i].p[j].y *= scale;
+                objects[obj].triangles[i].p[j].z *= scale;
+
+                center.x += objects[obj].triangles[i].p[j].x;
+                center.y += objects[obj].triangles[i].p[j].y;
+                center.z += objects[obj].triangles[i].p[j].z;
+            }
+        }
+
+        // Average to find center
+        int totalPoints = objects[obj].nTriangles * 3;
+        center.x /= totalPoints;
+        center.y /= totalPoints;
+        center.z /= totalPoints;
+
+        // Translate model so its center is at origin, then move to distance
+        for (int i = 0; i < objects[obj].nTriangles; i++) {
+            for (int j = 0; j < 3; j++) {
+                objects[obj].triangles[i].p[j].x -= center.x;
+                objects[obj].triangles[i].p[j].y -= center.y;
+                objects[obj].triangles[i].p[j].z -= center.z;
+                objects[obj].triangles[i].p[j].z -= distance; 
+            }
         }
     }
 
-    // Average to find center
-    int totalPoints = numTriangles * 3;
-    center.x /= totalPoints;
-    center.y /= totalPoints;
-    center.z /= totalPoints;
-
-    // Translate model so its center is at origin, then move to distance
-    for (int i = 0; i < numTriangles; i++) {
-        for (int j = 0; j < 3; j++) {
-            triangles[i].p[j].x -= center.x;
-            triangles[i].p[j].y -= center.y;
-            triangles[i].p[j].z -= center.z;
-            triangles[i].p[j].z -= distance; 
+    for (int i = 0; i < objects[0].nTriangles; i++) {
+            for (int j = 0; j < 3; j++) {
+                objects[0].triangles[i].p[j].x -= 16;
+                objects[0].triangles[i].p[j].y -= 8;
+            }
         }
-    }
 
     // Timing variables for smooth frame-independent movement
     Uint64 lastTime = SDL_GetPerformanceCounter();
@@ -432,34 +508,10 @@ int main()
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
 
-        // Draw triangles with proper depth sorting
+        // Render every object
         SDL_SetRenderDrawColor(renderer, 204, 204, 255, 225);
-        for (int i = 0; i < numTriangles; i++)
-        {
-            triangles[i].normal = findNormal(triangles[i]);
-            triangles[i].dot = findDot(triangles[i], camera);
-            
-            if (fillMode){
-                // In fill mode, use z-buffer for all triangles
-                if (!culling || triangles[i].dot > 0) {
-                    fillFace(renderer, triangles[i], camera);
-                }
-            } else {
-                // Wireframe mode (no z-buffer needed)
-                point2D v1 = project(triangles[i].p[0], camera);
-                point2D v2 = project(triangles[i].p[1], camera);
-                point2D v3 = project(triangles[i].p[2], camera);
-                
-                if (triangles[i].dot > 0 && culling){
-                    SDL_RenderDrawLine(renderer, v1.x, v1.y, v2.x, v2.y);
-                    SDL_RenderDrawLine(renderer, v2.x, v2.y, v3.x, v3.y);
-                    SDL_RenderDrawLine(renderer, v3.x, v3.y, v1.x, v1.y);
-                } else if (!culling){
-                    SDL_RenderDrawLine(renderer, v1.x, v1.y, v2.x, v2.y);
-                    SDL_RenderDrawLine(renderer, v2.x, v2.y, v3.x, v3.y);
-                    SDL_RenderDrawLine(renderer, v3.x, v3.y, v1.x, v1.y);
-                }
-            }
+        for (int i = 0; i < nObjects; i++) {
+            renderObject(objects[i], camera, renderer, fillMode, culling);
         }
 
         // Display newest render
@@ -471,8 +523,6 @@ int main()
 
     // Free memory
     free(zBuffer);
-    free(vertices);
-    free(triangles);
 
     // Close everything before shutting down
     SDL_DestroyRenderer(renderer);
