@@ -10,7 +10,7 @@ This project is a simple 3D renderer implemented in C using the SDL2 library. It
 - Resizable SDL window  
 
 ## Preview
-![wireframe](images/wireframe.png)
+![wireframe](preview.png)
 *Fully rendered head and bunny models*
 
 ## Build Instructions
