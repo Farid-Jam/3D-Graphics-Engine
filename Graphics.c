@@ -1,13 +1,18 @@
 #include <SDL.h>
 #include <math.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+
 
 int FOV = 90;
-int distance = 11;
+int distance = -20;
 int windowWidth = 1280;
 int windowHeight = 700;
 int running = 1;
 SDL_Event event;
-int numTriangles = 12;
+int numVerts = 0;
+int numTriangles = 0;
 int culling = 0; // 0 to turn off, any other number to turn on
 int fillMode = 0; // 0 to turn off, any other number to turn on
 
@@ -102,19 +107,17 @@ point2D project(point3D p)
 void rotateX(point3D *p, double theta)
 {
     p->z -= distance;
-
     double newY = p->y * cos(theta) - p->z * sin(theta);
     double newZ = p->y * sin(theta) + p->z * cos(theta);
 
     p->y = newY;
-    p->z = newZ + distance;
+    p->z = newZ + distance;;
 }
 
 // Method to rotate three dimensional points about the Y axis 
 void rotateY(point3D *p, double theta)
 {
-    p->z -= distance;
-
+    p->z -=distance;
     double newX = p->x * cos(theta) + p->z * sin(theta);
     double newZ = -1 * (p->x * sin(theta)) + p->z * cos(theta);
 
@@ -186,6 +189,41 @@ void fillFace(SDL_Renderer *renderer, triangle tri)
     fillTriangle(renderer, v1, v2, v3);
 }
 
+// .obj data loader
+int loadOBJ(const char* filename, point3D** vertices, triangle** tris, int* nTriangles)
+{
+    FILE* f = fopen(filename, "r");
+    if (!f){
+        printf("Failed to open %s\n", filename); 
+        return 0;
+    }
+    char line[256];
+    int nVertices = 0;
+    *nTriangles = 0;
+
+    point3D* vert = malloc(sizeof(point3D) * 5000);
+    triangle* tri = malloc(sizeof(triangle) * 10000);
+
+    while (fgets(line, sizeof(line), f)){
+        if (strncmp(line, "v ", 2)==0){
+            point3D v;
+            sscanf(line, "v %lf %lf %lf", &v.x, &v.y, &v.z);
+            vert[nVertices++] = v;
+        }else if(strncmp(line,"f ",2)==0){
+            int idx[10], count=sscanf(line+2,"%d %d %d %d %d %d %d %d %d %d",&idx[0],&idx[1],&idx[2],&idx[3],&idx[4],&idx[5],&idx[6],&idx[7],&idx[8],&idx[9]);
+            for(int i=1;i<count-1;i++){
+                tri[*nTriangles]=(triangle){vert[idx[0]-1],vert[idx[i]-1],vert[idx[i+1]-1]};
+                (*nTriangles)++;
+            }
+        }
+    }
+    fclose(f);
+    *vertices = vert;
+    *tris = tri;
+    *nTriangles = *nTriangles;
+    return 1;
+}
+
 int main()
 {
     // Initialize system
@@ -202,41 +240,45 @@ int main()
     // Grab renderer 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
 
-    // Initialize points
-    point3D p1 = {-1, -1, -1 + distance};
-    point3D p2 = {1, -1, -1 + distance};
-    point3D p3 = {1, 1, -1 + distance};
-    point3D p4 = {-1, 1, -1 + distance};
-    point3D p5 = {-1, -1, 1 + distance};
-    point3D p6 = {1, -1, 1 + distance};
-    point3D p7 = {1, 1, 1 + distance};
-    point3D p8 = {-1, 1, 1 + distance};
+    // Load object
+    point3D* vertices = NULL;
+    triangle* triangles = NULL;
+    if(!loadOBJ("models/bunny.obj", &vertices, &triangles, &numTriangles)){
+        printf("Failed to load OBJ\n"); 
+        return 1;
+    }
 
-    // Initialize array of face struc holding all necessary cube faces
-    triangle triangles[12] = {
-            {p1, p3, p2},  // CW from outside
-        {p1, p4, p3},
+    // After loading and scaling the model, calculate its center
+    double scale = 50.0;
+    point3D center = {0, 0, 0};
 
-        // Front face (+Z)
-        {p5, p6, p7},  // CW from outside
-        {p5, p7, p8},
+    for (int i = 0; i < numTriangles; i++) {
+        for (int j = 0; j < 3; j++) {
+            triangles[i].p[j].x *= scale;
+            triangles[i].p[j].y *= scale;
+            triangles[i].p[j].z *= scale;
+            
+            center.x += triangles[i].p[j].x;
+            center.y += triangles[i].p[j].y;
+            center.z += triangles[i].p[j].z;
+        }
+    }
 
-        // Bottom face (-Y)
-        {p1, p2, p6},  // CW from outside
-        {p1, p6, p5},
+    // Average to find center
+    int totalPoints = numTriangles * 3;
+    center.x /= totalPoints;
+    center.y /= totalPoints;
+    center.z /= totalPoints;
 
-        // Top face (+Y)
-        {p4, p8, p7},  // CW from outside
-        {p4, p7, p3},
-
-        // Left face (-X)
-        {p1, p8, p4},  // CW from outside
-        {p1, p5, p8},
-
-        // Right face (+X)
-        {p2, p3, p7},  // CW from outside
-        {p2, p7, p6}
-    };
+    // Translate model so its center is at origin, then move to distance
+    for (int i = 0; i < numTriangles; i++) {
+        for (int j = 0; j < 3; j++) {
+            triangles[i].p[j].x -= center.x;
+            triangles[i].p[j].y -= center.y;
+            triangles[i].p[j].z -= center.z;
+            triangles[i].p[j].z += distance;  // Move to viewing distance
+        }
+    }
 
     // Render loop
     while(running)
@@ -321,6 +363,9 @@ int main()
         SDL_RenderPresent(renderer);
         SDL_Delay(10);
     }
+
+    free(vertices);
+    free(triangles);
 
     // Close everything before shutting down
     SDL_DestroyRenderer(renderer);
