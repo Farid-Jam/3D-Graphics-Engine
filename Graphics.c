@@ -465,7 +465,37 @@ int main()
                 }
                 if (event.key.keysym.sym == SDLK_ESCAPE)
                 {
-                    SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN);
+                    Uint32 flags = SDL_GetWindowFlags(window);
+                    int isFullscreen = flags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP);
+
+                    if (isFullscreen) {
+                        // Exit fullscreen
+                        SDL_SetWindowFullscreen(window, 0);
+                        SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+                    } else {
+                        // Enter fullscreen
+                        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+                    }
+                }
+            }
+
+            if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_RIGHT)
+            {
+                static int mouseFree = 0; // 0 = captured, 1 = free
+
+                if (mouseFree)
+                {
+                    // Capture and hide again
+                    SDL_ShowCursor(SDL_DISABLE);
+                    SDL_SetRelativeMouseMode(SDL_TRUE);
+                    mouseFree = 0;
+                }
+                else
+                {
+                    // Release and show cursor
+                    SDL_ShowCursor(SDL_ENABLE);
+                    SDL_SetRelativeMouseMode(SDL_FALSE);
+                    mouseFree = 1;
                 }
             }
 
