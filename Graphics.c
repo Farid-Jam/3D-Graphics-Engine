@@ -18,6 +18,8 @@ double camYaw = 0;
 double camPitch = 0;
 char* bunny = "models/bunny.obj";
 char* head = "models/head.obj";
+int xOffset = 16;
+int yOffset = 8;
 
 // Z-buffer for depth testing
 float *zBuffer = NULL;
@@ -371,7 +373,7 @@ int main()
     point3D camera = {0, 0, 0};
 
     // Create window
-    SDL_Window *window = SDL_CreateWindow("Graphics3D", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
+    SDL_Window *window = SDL_CreateWindow("3D Renderer", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
     windowWidth, windowHeight, SDL_WINDOW_SHOWN);
     SDL_SetWindowResizable(window, SDL_TRUE);
 
@@ -420,10 +422,11 @@ int main()
         }
     }
 
+    // Offset first model
     for (int i = 0; i < objects[0].nTriangles; i++) {
             for (int j = 0; j < 3; j++) {
-                objects[0].triangles[i].p[j].x -= 16;
-                objects[0].triangles[i].p[j].y -= 8;
+                objects[0].triangles[i].p[j].x -= xOffset;
+                objects[0].triangles[i].p[j].y -= yOffset;
             }
         }
 
