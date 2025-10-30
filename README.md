@@ -29,10 +29,11 @@ make
 ```
 
 ## Controls
-| Key/Input | Action                   |
-|-----------|--------------------------|
-| `esc`     | toggle fullscreen        |
-| `f`       | toggle filled face mode  |
-| `c`       | toggle back-face culling |
-| Mouse     | Rotate camera            |
-| `wasd`    | Movement keys            |
+| Key/Input   | Action                   |
+|-------------|--------------------------|
+| `esc`       | toggle fullscreen        |
+| `f`         | toggle filled face mode  |
+| `c`         | toggle back-face culling |
+| Mouse       | Rotate camera            |
+| `wasd`      | Movement keys            |
+| Right Click | Retrieve mouse         |
