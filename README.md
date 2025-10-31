@@ -7,7 +7,8 @@ This project is a simple 3D renderer implemented in C using the SDL2 library. It
 - Back-face culling toggle (`c` key)  
 - Solid face rendering toggle (`f` key)  
 - Dynamic lighting via dot product  
-- Resizable SDL window  
+- Resizable SDL window
+- Model loading through .OBJ files
 
 ## Preview
 ![wireframe](preview.png)
